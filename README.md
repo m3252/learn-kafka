@@ -8,7 +8,7 @@
 ### 로그 (모든 소프트웨어 엔지니어가 실시간 데이터의 통합 추상화에 대해 알아야 할 사항)
 - https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying
 
-
+<hr>
 
 # 3장. 카프카 기본 개념 설명
 
@@ -168,3 +168,111 @@ kebab-case나 snake_case가 권장되며 특수문자를 조합하여 사용하�
 #### 헤더
 
 레코드의 추가적인 정보를 담는 메타데이터 저장소 용도로 사용한다. 헤더는 키/값 형태로 데이터를 추가하여 레코드의 속성(스키마 버전 등)을 저장하여 컨슈머에서 참조할 수 있다.
+
+<hr>
+
+## 3.4 카프카 클라이언트
+
+> 카프카 클러스터에 명령을 내리거나 데이터를 송수신하기 위해 카프카 클라이언트 라이브러리는 카프카 프로듀서, 컨슈머, 어드민 클라이언트를 제공하는 카프카 클라이언트를 사용하여 애플리케이션을 개발한다.
+
+### **프로듀서 API**
+
+카프카의 데이터 시작점이며 프로듀서 애플리케이션은 카프카에 필요한 데이터를 선언하고 브로커의 특정 토픽의 파티션에 전송한다.
+
+- 프로듀서는 데이터를 전송할 때 리더 파티션을 가지고 있는 카프카 브로커와 직접 통신한다.
+- 프로듀서는 데이터를 직렬화하여 카프카 브로커로 보낸다.
+- 자바의 primitive type, reference type 뿐 아니라 동영상, 이미지 같은 바이너리 데이터도 전송 가능하다.
+
+#### 간단의 형태의 프로듀서
+```java
+public class SimpleProducer {
+  private final static Logger logger = LoggerFactory.getLogger(SimpleProducer.class);
+  private final static String TOPIC_NAME = "test";
+
+  //전송할 카프카 클러스터 정보
+  private final static String BOOTSTRAP_SERVERS = "my-kafka:9092";
+
+  public static void main(String[] args) {
+    //1.필수 옵션과 선택 옵션을 설정한다.
+    Properties properties = new Properties();
+    properties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
+    properties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+    properties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+
+    //2.설정 값을 프로듀서에 인자로 넘긴다.
+    KafkaProducer<String, String> producer = new KafkaProducer<>(properties);
+
+    String messageValue = "testMessage";
+    //3.카프카 브로커로 데이터를 보내기 위해 프로듀서 레코드를 생성한다.
+    //메시지 키를 담지 않았기 때문에 null로 설정된다.
+    //ProducerRecord(String topic, Integer partition, Long timestamp, K key, V value, Iterable<Header> headers)
+    ProducerRecord<String, String> record = new ProducerRecord<>(TOPIC_NAME, messageValue);
+
+    //즉각 전송이 아닌 레코드를 프로듀서 내부에 가지고 있다가 배치 형태로 묶어서 브로커에 전송한다.
+    producer.send(record);
+    /*
+     * 1. 카프카 옵션 출력
+     * 2. 카프카 클라이언트 버전 출력
+     * 3. 전송한 레코드 출력
+     * */
+    logger.info("{}", record);
+    //프로듀서 내부 버퍼에 가지고 있는 레코드 목록을 브로커로 전송한다.
+    producer.flush();
+    //프로듀서 리소스 종료
+    producer.close();
+  }
+}
+```
+
+<hr>
+
+#### 프로듀서 중요 개념
+
+- 프로듀서는 카프카 브로커로 데이터를 전송할 때 내부적으로 파티셔너, 배치 생성 단계를 거친다.
+- ProductRecord 생성시 파티션 번호 지정, 타임스탬프 설정, 메시지 키를 설정할 수도 있다. 
+  - 레코드의 타임스탬프는 카프카 브로커에 저장될 때 브로커 시간을 기준으로 설정되지만 설정을 할 수도 있다.
+- KafkaProducer.send()를 호출하면 ProductRecord는 파티셔너(partitioner)에서 토픽의 어느 파티션으로 전송될 것인지 정해진다.
+  - 따로 설정을 주지 않으면 DefaultPartitioner로 설정된다.
+- 파티셔너에 의해 구분된 레코드는 데이터 전송 전에 어큐뮬레이터(accumulator)에 데이터를 버퍼로 쌓아놓고 발송한다.
+  - 버퍼에 쌓인 데이터는 배치로 묶어서 전송함으로써 카프카의 프로듀서 처리량을 향상시키는데 도움을 준다.
+- 프로듀서 API를 사용하면 'UniformStickyPartitioner'와 'RoundRobinPartitioner' 2개 파티션을 제공한다.
+  - 메시지 키가 있을 때는 메시지 키의 해시값과 파티션을 매칭하여 데이터를 전송한다는 점이 동일하다.
+  - 메시지 키가 없다면 파티션에 최대한 동일하게 분배하는 로직이 들어 있는데 UniformStickyPartitioner은 RoundRobinPartitioner의 단점을 개선하였다.
+
+##### **UniformStickyPartitioner**
+- 프로듀서 동작에 특화되어 높은 처리량과 낮은 리소스 사용률을 가진다.
+- 어큐뮬레이터에서 데이터가 배치로 모두 묶일 때 까지 기다렸다가 배치로 묶인 데이터는 모두 동일한 파티션으로 전송한다.
+
+
+##### **RoundRobinPartitioner**
+- ProductRecord가 들어오는 대로 파티션을 순회하며 전송하기 때문에 배치로 묶이는 빈도가 적다.
+
+<hr>
+
+추가적으로 카프카 프로듀서는 브로커로 전송 시 압축 방식을 정할 수 있는데 압축 옵션으로 gzip, snappy, lz4, zstd 를 지원한다.
+압축을 하면 데이터 전송시 네트워크 처리량에 이점을 가지지만, 압축을 푸는 데에 CPU 또는 메모리 리소스를 사용하므로 사용환경에 따라 적절한 옵션 사용이 권장된다.
+
+또한, 프로듀서에서 압축한 메시지는 컨슈머 애플리케이션이 압축을 풀게 되는데 이때도 컨슈머 애플리케이션 리소스가 사용되는 점을 주의해야 한다.
+
+<hr>
+
+#### 프로듀서 주요 옵션
+
+- 필수
+  - bootstrap.servers (카프카 클러스터에 속한 브로커 정보)
+  - key.serializer (레코드 메시지 키 직렬화)
+  - value.serializer (레코드 메시지 값 직렬화)
+- 선택 (주요)
+  - acks (성공 확인 LEVEL)
+  - buffer.memory (버퍼 메모리)
+  - retries (실패시 재시도 횟수)
+  - batch.size (배치 사이즈)
+  - linger.ms (배치 전송 시간)
+  - partitioner.class (파티셔너 지정)
+  - enable.idempotence (멱등성)
+  - transactional.id (트래잭션 묶기)
+
+[카프카 전체 옵션](https://kafka.apache.org/documentation/#producerconfigs)
+
+<hr>
+
