@@ -272,7 +272,7 @@ public class SimpleProducer {
   - enable.idempotence (멱등성)
   - transactional.id (트래잭션 묶기)
 
-[카프카 전체 옵션](https://kafka.apache.org/documentation/#producerconfigs)
+[카프카 프로듀서 옵션](https://kafka.apache.org/documentation/#producerconfigs)
 
 <hr>
 
@@ -292,6 +292,8 @@ public class SimpleProducer {
     - 데이터를 수집하는 목적에 따라 컨슈머 그룹을 세분화할 필요가 있다.
 - 토픽의 특정 파티션만 구독하는 컨슈머를 운영
 
+<hr>
+
 ##### 컨슈머 그룹 리밸런싱
 
 > 컨슈머 그룹 중 일부 컨슈머가 제외(장애)되거나 추가되면 컨슈머에 할당된 파티션의 소유권이 옮겨진다. 이러한 과정을 리밸런싱이라고 부른다.
@@ -302,5 +304,51 @@ public class SimpleProducer {
 - 그룹 조정자 (group coordinator)는 리밸런싱을 발동시키는 역할을 한다.
   - 컨슈머 그룹의 컨슈마가 추가, 제외될 때를 감지한다.
 
+<hr>
+
+- 비명시 오프셋 커밋은 리밸선싱 또는 컨슈머 강제종료 발생 시 데이터 중복 또는 유실 가능성이 있다.
+- 명시적 오프셋 커밋은 poll() 메소드 호출 이후에 반환받은 데이터의 처리가 완료되고 commitSync() 메소드를 호출하면 된다.
+  - commitSync()는 poll()을 통해 반환된 레코드의 가장 마지막 오프셋을 기준으로 커밋을 수행한다.
+  - commitSync()는 브로커에 커밋을 요청을 하고 커밋이 정상 처리되었는지 응답하기까지 기다리는데 이는 컨슈머의 처리량에 영향을 미친다.
+    - 이를 해결하기 위해 commitAsync()를 사용한다. 하지만 비동기 커밋은 실패했을 경우 데이터의 순서를 보장하지 않으며 중복처리에 대한 문제를 가진다.
 
 
+#### 컨슈머 내부 구조
+> 컨슈머는 poll()을 통해 레코드들을 반환받지만 poll()을 호출하는 시점에 클러스터에서 데이터를 가져오는 것은 아니다.
+> 컨슈머 애플리케이션을 실행하면 내부에서 Fetcher 인스턴스가 생성되어 poll() 메소드를 호출하기 전에 미리 레코드들을 내부 큐로 가져온다. 이후에 사용자가 명시적으로 poll()을 호출하면 컨슈머는 내부 큐에 있는 레코드를 반환받아 처리한다.
+
+#### 컨슈머 주요 옵션
+
+- 필수
+  - bootstrap.servers (카프카 클러스터에 속한 브로커 정보)
+  - key.deserializer (레코드 메시지 키 역직렬화)
+  - value.deserializer (레코드 메시지 값 역직렬화)
+- 선택 (주요)
+  - group.id (컨슈머 그룹아이디 지정)
+    - subscribe() 로 토픽을 구독하여 사용한다면 필수
+  - auto.offset.reset (컨슈머 그룹이 어느 오프셋을 읽을지 선택)
+  - enable.auto.commit (자동 커밋 or 수동 커밋)
+  - auto.commit.interval.ms (자동커밋 오프셋 커밋 시간 간격)
+  - max.poll.records (poll()을 통해 반환되는 레코드 수)
+  - session.timeout.ms (컨슈머가 브로커와 연결이 끊기는 시간)
+    - 시간 내 하트비트를 전송하지 않으면 컨슈머에 이슈가 발생했다고 가정하고 리밸런싱을 시작
+  - heartbeat.interval.ms (하트비트 시간)
+  - max.poll.interval.ms (poll() 호출하는 간격의 최대 시간)
+    - 시간 내 데이터 처리가 안된다면 비정상으로 판단하고 리밸런싱
+  - isolation.level (트래잭션 프로듀서가 레코드를 트랜잭션 단위로 보낼 경우 사용)
+
+[카프카 전체 옵션](https://kafka.apache.org/documentation/#consumerconfigs)
+
+<hr>
+
+
+### **어드민 API**
+
+카프카에 설정된 내부 옵션을 확인하는 가장 확실한 방법은 브로커 중 한 대에 접속하거나, 카프카 CLI를 통한 방법이 있지만 번거롭거나 일회성에 그친다.
+
+이런 문제를 위해 카프카 클라이언트에서는 내부 옵션을 설정하고 조회하기 위해 AdminClient 클래스를 제공한다. AdminClient를 활용하면 클러스터의 옵션과 관련된 부분을 자동화 할 수 있다.
+
+예시
+- 카프카 컨슈머를 멀티 스레드로 생성할 때, 구독하는 토픽의 파티션 개수만큼 스레드를 생성하고 싶을 때 스레드 생성 전에 해당 토픽의 파티션 개수를 어드민 API를 통해 가져올 수 있다.
+- AdminClient 클래스로 구현한 웹 대시보드를 통해 ACL(Access Control List)이 적용된 클러스터의 리소스 접근 권한 규칙 추가를 할 수 있다.
+- 특정 토픽의 데이터양이 늘어남을 감지하고 AdminClient 클래스로 해당 토픽의 파티션을 늘릴 수 있다.
