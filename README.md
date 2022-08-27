@@ -379,7 +379,7 @@ public class SimpleProducer {
   - JSON 데이터를 커넥터에서 사용할 때 트랜스폼을 사용하면 특정 키를 삭제 또는 추가할 수 있다. (기본제공:Cast, Drop, ExtractField)
 
 
-![kafka-connector.png](kafka-connect-arch.png)
+![kafka-connector.png](images/kafka-connect-arch.png)
 [출처:https://medium.com/walmartglobaltech/kafka-connect-overview-a84782d96ab5]
 
 #### 커넥트 실행 방법

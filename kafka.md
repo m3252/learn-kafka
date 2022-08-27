@@ -143,3 +143,202 @@ $ bin/kafka-topics.sh --bootstrap-server my-kafka:9092 \
 -- create --topic my-topic \
 -- config unclean.leader.election.enable=false 
 ```
+
+---
+
+## 4.2 카프카 프로듀서 
+> 카프카 클러스터는 3대 이상의 브로커로 이루어져 있어서 일부 브로커에 이슈가 생기더라도 데이터의 유실을 막을 수 있다. 그러나 유실을 막기 위해선 프로듀서에서 제공하는 다양한 옵션을 함께 사용해야 한다.
+
+### 4.2.1 acks 옵션
+
+acks옵션을 통해 프로듀서가 전송한 데이터가 카프카 클러스터에 얼마나 신뢰성 높게 저장할지 지정할 수 있다.
+이 옵션에 따라 프로듀서의 성능이 달라질 수 있으므로 acks 옵션에 따른 카프카 동작 방식을 상세히 알고 설정해야 한다.
+
+복제 개수가 1인 경우 acks 옵션에 따른 성능 변화는 크지 않다. 여기서는 복제 개수가 2 이상으로 운영하는 경우에 각 acks 별 동작 방식을 알아본다.
+
+#### acks
+- 0
+  - 프로듀서가 리더 파티션으로 데이터를 전송했을 때 리더 파티션으로 데이터가 잘 저장되었는지 확인하지 않는다.
+    - 리더 파티션은 데이터가 저장된 이후에 데이터가 몇 번째 오프셋에 저장되었는지 리턴한다. 이 때, acks 값이 0으로 설정되어 있다면 프로듀서는 리더 파티션에 데이터가 저장되었는지 여부에 대한 응답 값을 받지 않는다.
+    - 프로듀서에는 데이터의 전송이 실패했을 때 재시도를 할 수 있도록 retries 옵션을 설정할 수 있는데, acks 값이 0이라면 retries옵션이 무의미하다.
+  - 데이터 유실이 발생할 수 있지만, acks 값이 1 또는 all 로 했을 경우보다 훨씬 빠르다.
+- 1
+  - 프로듀서가 보낸 데이터가 리더 파티션에만 정상적으로 적재되었는지 확인한다.
+    - 만약 정상적으로 데이터가 적재되지 않았다면 재시도를 할 수 있다. 
+  - 리더 파티션에 적재가 완료되어 있어도 팔로워 파티션에는 데이터 동기화가 되지 않을 수 있는데, 이 때 동기화되지 않은 데이터가 유실이 발생할 수 있다.
+- all or -1
+  - 리더 파티션과 팔로워 파티션에 모두 정상적으로 데이터가 적재되었는지 확인한다.
+  - acks=all 옵션값은 모든 리더 파티션과 팔로워 파티션의 적재를 뜻하는 것은 아니고 ISR에 포함된 파티션을 뜻하는 것이기 때문이다.
+  - min.insync.replicas 옵션은 프로듀서가 리더 파티션과 팔로워 파티션에 데이터가 적재되었는지 확인하기 위한 최소 ISR 그룹의 파티션 개수이다.
+    - min.insync.replicas = 1
+      - ISR중 최소 1개 이상의 파티션에 데이터가 적재되었음을 확인하는 것이다. 이 경우 acks를 1로 했을 때와 같은 동작을 하는데, 이유는 ISR중 가장 처음 적재가 완료되는 파티션은 리더 파티션이기 때문이다.
+    - min.insync.replicas = 2
+      - 2로 설정했을 때부터 acks를 all로 설정하는 의미가 있다. 이 경우 ISR의 2개 이상의 파티션에 데이터가 정상 적재되었음을 확인한다는 뜻이다.
+        - 리더 파티션 1개와 팔로워 파티션에 정상적으로 데이터가 적재되었음을 보장한다.
+    - min.insync.replicas = 3
+      - 카프카 브로커 복제 개수를 3으로 설정하면, 브로커 3대 중 1대에 이슈가 발생하여 동작하지 못하는 상황이 생기면 프로듀서는 데이터를 해당 토픽에 전송할 수 없다.
+        - 왜냐하면 최소한으로 복제되어야 하는 파티션 개수가 3인데 팔로워 파티션이 위치할 브로커의 개수가 부족하기 떄문이다. 
+        - NotEnoughReplicasException, NotEnoughReplicasAfterAppendException이 발생한다.
+    - min.insync.replicas 옵션을 설정할 때 추가로 주의해야 할 점은 절대로 브로커 개수와 동일한 숫자로 설정하면 안되고 브로커 개수 미만으로 설정해야 한다.
+      - 예를 들면 브로커 3대로 클러스터를 운영하면서 min.insync.replicas = 3 설정을 하는 경우 카프카 클러스터의 버전 업그레이드와 같은 상황이 발생하면 브로커는 롤링 다운 타임이 생기는데, 브로커가 1대라도 중단되면 프로듀서가 데이터를 추가할 수 없다.
+    - 사용환경에서는 브로커를 3대 이상으로 묶고 토픽이 복제 개수는 3, min.insync.replicas = 2를 추천한다.
+
+![acks-process.png](images/acks-process.png)
+[출처: www.towardsdatascience.com]
+
+![insync-replicas.png](images/insync-replicas.png)
+[출처: www.towardsdatascience.com]
+
+---
+
+### 4.2.2 멱등성 (idempotence) 프로듀서
+
+> 먁등성 프로듀서란 동일한 데이터를 여러 번 전송하더라도 카프카 클러스터에 단 한 번만 저장됨을 의미한다.
+
+기본 프로듀서의 동작 방식은 적어도 한번 전달(at least once delivery)을 지원한다. 적어도 한번 전달이란 프로듀서가 클러스터에 데이터를 전송하여 저장할 때 적어도 한 번 이상 데이터를 적재할 수 있고 데이터가 유실되지 않음을 뜻한다. 다만 두 번 이상 적재할 가능성이 있으므로 데이터의 중복이 발생할 수 있다.
+
+프로듀서가 보내는 데이터의 중복 적재를 막기 위해 프로듀서에서 enable.idempotence 옵션을 사용하여 정확히 한번 전달(exactly once delivery)을 지원한다.
+
+```shell
+enable.idempotent=true
+```
+
+
+1. 멱등성 프로듀서는 기본 프로듀서와 달리 데이터를 브로커로 전달할 때 프로듀서 PID(producer unique ID)와 시퀀스 넘버를 함께 전달한다.
+2. 그러면 브로커는 프로듀서의 PID와 시퀀스 넘버를 확인하여 동일한 메시지의 적재 요청이 오더라도 단 한 번만 데이터를 적재함으로써 멱등성을 보장한다.
+3. 단, 멱등성 프로듀서는 장애가 발생하지 않고 동일한 세션에서만 정확히 한번 전달을 보장한다. 동일한 세션이란 PID의 생명주기를 뜻한다.
+
+멱등성 프로듀서를 사용하기 위해 enable.idempotence을 true로 설정했다면 정확히 한번 적재하는 로직이 성립되기 위해 일부 옵션들이 강제로 설정된다.
+
+- 프로듀서의 데이터 재전송 횟수를 정하는 retries = Integer.MAX_VALUE
+- acks = all 
+
+정확히 한번 적재란 한번 전송을 뜻하는 것이 아닌 중복된 데이터를 적재하지 않는다는 뜻이다.
+
+멱등성 프로듀서의 시퀀스 넘버는 0부터 시작하여 숫자를 1씩 더한 값이 전달되는데, 브로커가 예상한 시퀀스 넘버와 다른 번호의 요청이 온다면 OutOfOrderSequenceException(시퀀스 넘버 역전 형상)이 발생할 수 있다.
+
+
+![idempotence.png](images/idempotence.png)
+[출처: www.towardsdatascience.com]
+
+---
+
+### 4.2.3 트랜잭션(transaction) 프로듀서
+
+> 다수의 파티션에 데이터를 저장할 경우 모든 데이터에 대해 동일한 원자성(atomic)을 만족시키기 위해 사용된다.
+
+원자성 만족이란 다수의 데이터를 동일 트랜잭션으로 묶음으로써 전체 데이터를 처리하거나 처리하지 않도록 하는 것을 의미한다.
+
+컨슈머가 트랜잭션으로 묶인 데이터를 브로커에서 가져갈 때는 기본 동작과 다르게 설정할 수 있다.
+
+
+````shell
+트랜잭션 프로듀서 설정
+enable.idempotence=true
+transactional.id='임의의 String 값'
+
+컨슈머 설정
+isolation.level=read_committed
+````
+
+위와 같이 설정하면 프로듀서와 컨슈머는 트랜잭션으로 처리 완료된 데이터만 쓰고 읽게 된다.
+
+- 트랜잭션은 파티션의 레코드로 구분한다.
+- 트랜잭션 프로듀서는 사용자가 보낸 데이터를 레코드로 파티션에 저장할 뿐만 아니라 트랜잭션의 시작과 끝을 표현하기 위해 트랜잭션 레코드를 1개 더 보낸다.
+- 트랜잭션 컨슈머는 파티션에 저장된 트랜잭션 레코드를 보고 트랜잭션이 완료(commit)되었음을 확인하고 데이터를 가져간다.
+- 트랜잭션 레코드는 실직적인 데이터는 가지고 있지 않으며 트랜잭션이 끝난 상태를 표시하는 정보만 가지고 있다. 대신 레코드의 특성은 그대로 가지고 있기 때문에 파티션에 저장되어 오프셋을 한 개 차지한다.
+
+![transaction-producer.png](images/transaction-producer.png)
+[출처:https://gunju-ko.github.io/kafka/2018/03/31/Kafka-Transaction.html]
+
+- 트랜잭션 컨슈머는 커밋이 완료된 데이터가 파티션에 있을 경우에만 데이터를 가져간다. 만약 데이터만 존재하고 트랜잭션 레코드가 존재하지 않으면 아직 트랜잭션이 완료되지 않은 상태라고 판단하고 데이터를 가지고 가지 않는다.
+
+---
+
+## 4.3 카프카 컨슈머
+
+> 컨슈머는 카프카에 적재된 데이터를 처리한다. 컨슈머를 통해 데이터를 카프카 클러스터로부터 가져가고 처리해야 한다.
+
+
+### 4.3.1 멀티 스레드 컨슈머
+파티션을 여러 개로 운영하는 경우 데이터를 병렬처리하기 위해서 파티션 개수와 컨슈머 개수를 동일하게 맞추는 것이 가장 좋은 방법이다.
+
+- 토픽의 파티션은 1개 이상으로 이루어져 있으며 1개의 파티션은 1개 컨슈머가 할당되어 데이터를 처리할 수 있다.
+- 파티션이 n개라면 동일 컨슈머 그룹으로 묶인 컨슈머 스레드를 최대 n개 운영할 수 있다.
+  - n개의 스레드를 가진 1개의 프로세스를 운영하거나 1개의 스레드를 가진 프로세스를 n개 운영할 수 있다.
+
+#### 멀티 스레드 컨슈머 고려사항
+- 하나의 프로세스 내부에 스레드가 여러 개 생성되어 실행되기 때문에 하나의 컨슈머 스레드에서 예외적 상황(OutOfMemoryException)이 발생할 경우 프로세스 자체가 종료될 수 있고 이는 다른 컨슈머 스레드에까지 영향을 미칠 수 있다.
+- 컨슈머 스레드들이 비정상적으로 종료될 경우 데이터 처리에서 중복 또는 유실이 발생할 수 있다.
+- 각 컨슈머 스레드 간에 영향이 미치지 않도록 스레드 세이프 로직, 변수를 적용해야 한다.
+
+고려할 점은 많지만, 멀티 스레드로 동작하는 멀티 컨슈머 스레드 애플리케이션을 안정적으로 지속 운영할 수 있도록 개발한다면 매우 효율적인 컨슈머 운영이 가능하다.
+
+#### 멀티 스레드 운영 방식
+
+##### **컨슈머 멀티 워커 스레드 전략**
+> 컨슈머 스레드 1개, 데이터 처리를 담당하는 워커 스레드를 여러 개 실행하는 방식
+
+- ExecutorService를 사용하면 레코드를 병렬처리하는 스레드를 효율적으로 생성하고 관리할 수 있다.
+- Executors를 사용하여 스레드 풀을 생성할 수 있는데, 데이터 처리 환경에 맞는 스레드 풀을 사용할 수 있다.
+- 작업 이후 스레드가 종료되어야 한다면 CachedThreadPool을 사용하여 스레드를 실행한다.
+
+```java
+//레코드가 출력하고 출력이 완료되면 스레드가 종료하도록 Executors.newCachedThreadPool() 
+ExecutorService executorService = Executors.newCachedThreadPool();
+```
+
+- newCachedThreadPool은 필요한 만큼 스레드 풀을 늘려서 스레드를 실행하는 방식으로, 짧은 시간의 생명주기를 가진 스레드에서 유용하다.
+
+```java
+ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(10));
+```
+
+- poll() 메서드를 통해 리턴받은 레코드들을 처리하는 스레드를 레코드마다 개별 실행한다.
+
+```shell
+[pool-1-thread-1] INFO com.example.multiworker.ConsumerWorker - thread:pool-1-thread-1 	record:3
+[pool-1-thread-2] INFO com.example.multiworker.ConsumerWorker - thread:pool-1-thread-2 	record:
+[pool-1-thread-3] INFO com.example.multiworker.ConsumerWorker - thread:pool-1-thread-3 	record:213
+[pool-1-thread-4] INFO com.example.multiworker.ConsumerWorker - thread:pool-1-thread-4 	record:12
+[pool-1-thread-5] INFO com.example.multiworker.ConsumerWorker - thread:pool-1-thread-5 	record:312
+[pool-1-thread-6] INFO com.example.multiworker.ConsumerWorker - thread:pool-1-thread-6 	record:321
+[pool-1-thread-6] INFO com.example.multiworker.ConsumerWorker - thread:pool-1-thread-6 	record:31
+```
+
+주의사항
+- 스레드를 사용함으로써 데이터 처리가 끝나지 않았음에도 불구하고 커밋을 하기 때문에 리밸런싱, 컨슈머 장애 시에 데이터 유실이 발생할 수 있다.
+  - 각 레코드의 처리가 끝났음을 스레드로부터 리턴받지 않고 바로 poll() 메서드 호출한다.  
+- 레코드 처리의 역전형상이다.
+  - for 반복구문은 데이터 처리 순서를 보장하지만, 스레드는 순서를 보장할 수 없기에 운영환경에 대한 고려를 해야 한다.
+  - 서버 리소스(CPU, 메모리 등) 모니터링 파이프라인, IOT 서비스의 센서 데이터 수집 파이프라인에 적합하다.
+
+##### **컨슈머 멀티 스레드 전략**
+> 컨슈머 인스턴스에 poll() 메서드를 호출하는 스레드를 여러 개 띄워서 사용한다.
+
+하나의 파티션은 동일 컨슈머 중 최대 1개까지 할당된다. 그리고 하나의 컨슈머는 여러 파티션에 할당될 수 있다.
+
+**이런 컨슈머 특징을 가장 잘 살리는 방법은 1개의 애플리케이션에 구독하고자 하는 토픽의 파티션 개수만큼 컨슈머 스레드 개수를 늘려서 운영하는 것이다.**
+
+```shell
+   토픽                애플리케이션
+----------        ----------------
+| 파티션 1 |  --->  | 컨슈머 스레드 1 |
+----------        ----------------
+| 파티션 2 |  --->  | 컨슈머 스레드 2 |
+----------        ----------------  
+| 파티션 3 |  --->  | 컨슈머 스레드 3 |  
+----------        ----------------
+```
+
+여기서 주의할 점은 구독하고자 하는 토픽의 파티션 개수만큼만 컨슈머 스레드를 운영해야 한다.
+- 컨슈머 스레드가 파티션 개수보다 많아지면 할당할 파티션 개수가 더는 없으므로 파티션에 할당되지 못한 컨슈머 스레드는 데이터를 처리하지 않게 된다.
+
+````shell
+[pool-1-thread-3] INFO com.example.multiconsumer.ConsumerWorker - threadName=consumer-thread-2, record=ConsumerRecord(topic = test, partition = 3, leaderEpoch = 0, offset = 7, CreateTime = 1661596820102, serialized key size = -1, serialized value size = 1, headers = RecordHeaders(headers = [], isReadOnly = false), key = null, value = 4)
+[pool-1-thread-3] INFO com.example.multiconsumer.ConsumerWorker - threadName=consumer-thread-2, record=ConsumerRecord(topic = test, partition = 3, leaderEpoch = 0, offset = 8, CreateTime = 1661596820350, serialized key size = -1, serialized value size = 1, headers = RecordHeaders(headers = [], isReadOnly = false), key = null, value = 5)
+[pool-1-thread-3] INFO com.example.multiconsumer.ConsumerWorker - threadName=consumer-thread-2, record=ConsumerRecord(topic = test, partition = 3, leaderEpoch = 0, offset = 9, CreateTime = 1661596820671, serialized key size = -1, serialized value size = 1, headers = RecordHeaders(headers = [], isReadOnly = false), key = null, value = 6)
+````
+
+--- 
+
