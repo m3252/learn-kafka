@@ -342,3 +342,104 @@ ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(10));
 
 --- 
 
+### 4.3.2 컨슈머 랙(LAG)
+
+> 토픽의 최신 오프셋(LOG-END-OFFSET)과 컨슈머 오프셋(CURRENT-OFFSET)간의 차이다. 컨슈머 랙은 컨슈머가 정상 동작하는지 여부를 확인할 수 있기 때문에 컨슈머 애플리케이션을 운영한다면 필수적으로 모니터링해야 하는 지표이다.
+
+
+![consumer-lag.png](images/consumer-lag.png)
+[출처: https://blog.devgenius.io/golang-kafka-101-extract-and-calculate-our-consumer-lag-40f902158948]
+
+- 컨슈머 랙은 컨슈머 그룹과 토픽, 파티션별로 생성된다. 
+  - 1개의 토픽에 3개의 파티션이 있고 1개의 컨슈머 그룹이 토픽을 구독하여 데이터를 가져가면 컨슈머 랙은 총 3개이다.
+- 프로듀서가 보내는 데이터양이 컨슈머의 데이터 처리량보다 크다면 컨슈머 랙은 늘어난다.
+  - 반대로 컨슈머 데이터 처리량이 프로듀서가 보내는 데이터양 보다 크다면 컨슈머 랙은 줄어들고 최소값은 0으로 지연 없음을 뜻한다.
+
+컨슈머 랙 모니터링을 통해 컨슈머의 장애를 확인할 수 있고 파티션 개수를 정하는 데에 참고할 수 있다. 
+
+1. 트래픽이 높은 날(추석, 설날, 이벤트데이)에 컨슈머 랙이 발생할 경우 지연을 줄이기 위해 일시적으로 파티션 개수와 컨슈머 개수를 늘려서 병렬처리량을 늘리는 방법이 있다.
+2. 컨슈머의 장애로도 컨슈머 랙이 증가할 수도 있다.
+
+#### 컨슈머 랙 확인 방법
+
+컨슈머 랙을 확인하는 방법은 총 3가지가 있다. 
+1. 카프카 명령어
+2. 컨슈머 애플리케이션에서 metrics() 메서드
+3. 외부 모니터링 툴
+
+**카프카 명령어를 사용하여 컨슈머 랙 조회**  
+
+- kafka-consumer-groups.sh 명령어를 사용하면 컨슈머 랙을 포함한 특정 컨슈머 그룹의 상태를 확인할 수 있다.
+
+````shell
+bin/kafka-consumer-groups.sh --bootstrap-server my-kafka:9092 --describe --group test-group
+
+
+Consumer group 'test-group' has no active members.
+
+GROUP           TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID     HOST            CLIENT-ID
+test-group      test            1          3               3               0               -               -               -
+test-group      test            0          9               9               0               -               -               -
+test-group      test            3          10              10              0               -               -               -
+test-group      test            2          1               1               0               -               -               -
+test-group      test            4          5               5               0               -               -               -
+````
+
+이 방법은 일회성에 그치고 지표를 지속적으로 기록하고 모니터링하기에는 부족하다.
+
+**컨슈머 metrics() 메서드를 사용하여 컨슈머 랙 조회**
+
+```java
+for (Map.Entry<MetricName, ? extends Metric> entry : consumer.metrics().entrySet()) {
+    if ("record-lag-max".equals(entry.getKey().name()) |
+        "record-lags".equals(entry.getKey().name())    |
+        "record-lag-avg".equals(entry.getKey().name())) 
+    {
+        Metric metric = entry.getValue();
+        log.info(entry.getKey().name(), metric.metricValue());
+    }
+}
+```
+
+이 방법은 3가지 문제가 있다.
+
+1. 컨슈머가 정상 동작할 경우에만 확인 가능
+2. 컨슈머 애플리케이션에 컨슈머 랙 모니터링 코드를 중복 작성
+3. 컨슈머 랙을 모니터링하는 코드를 추가할 수 없는 카프카 서드 파티 애플리케이션의 컨슈머 랙 모니터링이 불가능
+
+**외부 모니터링 툴을 사용하여 컨슈머 랙 조회**
+
+- 데이터독
+- 컨플루언트 컨트롤 센터
+- 버로우(burrow)
+  - 링크드인에서 개발하여 오픈소스로 공개한 컨슈머 랙 체크 툴 (REST API 방식)
+
+외부 모니터링 툴을 사용하면 카프카 클러스터에 연결된 모든 컨슈머, 토픽들의 랙 정보를 한 번에 모니터링할 수 있다는 장점을 가진다.
+
+또한, 모니터링 툴들은 클러스터와 연동되어 컨슈머의 데이터 처리와는 별개로 지표를 수집하기 때문에 데이터를 활용하는 프로듀서나 컨슈머의 동작에 영향을 미치지 않는다.
+
+
+##### 버로우(Burrow)
+
+버로우의 가장 큰 특징은 단순히 카프카 컨슈머 랙의 임계츠로 나타내지 않았다는 점이다.
+
+~~~
+MaxLag를 사용하지 않는 이유
+
+표준 Kafka 소비자에는 MaxLag를 추적하는 기본 제공 메트릭이 있습니다. 이것이 편리할 수 있지만 다음과 같은 몇 가지 결함이 있습니다.
+
+- MaxLag는 모든 소비자에서 모니터링되어야 합니다. MaxLag 메트릭은 모든 소비자에서 수집되어야 합니다. 이러한 메트릭은 별도로 대조되고 해석되어야 합니다.
+- MaxLag는 소비자가 활성 상태일 때만 유효합니다. 메트릭은 소비자 자체에 의해 보고됩니다. 소비자가 실행 중이 아니면 사용할 수 있는 메트릭이 없습니다.
+- MaxLag는 객관적이지 않습니다. 소비자 자체가 메트릭을 보고하기 때문에 MaxLag는 소비자 지연의 객관적인 측정이 될 수 없습니다. 소비자는 메시지를 가져온 후 이를 측정하므로 소비에 문제가 있는 경우 잘못된 값이 보고될 수 있습니다.
+- MaxLag는 Java 클라이언트에서만 제공됩니다. 유일한 공식 Kafka 클라이언트는 Java 클라이언트이며 이 클라이언트는 사용 가능한 메트릭이 있는 유일한 클라이언트입니다. 확실히 다른 클라이언트에서 작동할 수 있지만 측정 및 메트릭 수집의 미묘한 차이에 대해 걱정해야 합니다.
+~~~
+[ref. https://github.com/linkedin/Burrow/wiki#why-not-maxlag] 
+
+컨슈머 애플리케이션을 운영할 때 컨슈머 랙이 임계치에 도달할 때마다 알람을 받는 것은 무의미한 일이다. 그래서 **버로우는 임계치가 아닌 슬라이딩 윈도우 계산을 통해 문제가 생긴 파티션과 컨슈머의 상태를 표현한다.**
+
+버로우에서 컨슈머 랙의 상태를 표현하는 것을 컨슈머 랙 평가라고 부른다. 컨슈머 랙과 파티션의 오프셋을 슬라이딩 윈도우로 계산하면 상태가 정해진다.
+
+결과적으로 파티션의 상태를 OK, STALLED, STOPPED로 표현하고 컨슈머의 상태를 OK, WARING(데이터 처리량이 프로듀서가 보내는 데이터 양에 비해 적음), ERROR로 표현한다.
+
+컨슈머 상태가 ERROR인 경우에는 파티션은 STALLED 상태가 되고 이 경우에는 컨슈머가 확실히 비정상적으로 동작하고 있으므로 이메일, SMS 등을 통해 즉각 알림받고 조치해야 한다.
+
